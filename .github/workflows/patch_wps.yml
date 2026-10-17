@@ -10,44 +10,53 @@ on:
 
 jobs:
   patch-apk:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: 1. Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: 2. Setup Java JDK 17
+      - name: 1. Setup Java JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 3. Install APKTool, gdown, & Uber-APK-Signer
+      - name: 2. Install APKTool & Signer
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget curl python3-pip zipalign
-          pip3 install --upgrade gdown
+          sudo apt-get install -y curl python3-pip zipalign
+          pip3 install --upgrade gdown --break-system-packages || pip3 install --upgrade gdown
           
-          # Unduh APKTool
-          wget https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool -O apktool
-          wget https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar -O apktool.jar
-          chmod +x apktool apktool.jar
-          sudo mv apktool apktool.jar /usr/local/bin/
+          echo "Mengunduh APKTool 2.9.3 langsung dari GitHub..."
+          curl -fL https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar -o apktool.jar
           
-          # Unduh Uber APK Signer
-          wget https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -O signer.jar
+          echo "Mengunduh Uber APK Signer..."
+          curl -fL https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -o signer.jar
+          
+          ls -lh apktool.jar signer.jar
 
-      - name: 4. Download APK dari Google Drive
+      - name: 3. Download APK dari Google Drive
         run: |
-          echo "Mengunduh file besar dari Google Drive..."
-          # Parameter --fuzzy dan --continue untuk menangani konfirmasi limit file besar
-          python3 -m gdown --fuzzy "${{ github.event.inputs.gdrive_url }}" -O wps_ori.apk --continue
+          INPUT_URL="${{ github.event.inputs.gdrive_url }}"
+          echo "Mengunduh APK dari: $INPUT_URL"
+          
+          # Coba unduh dengan gdown
+          python3 -m gdown --fuzzy "$INPUT_URL" -O wps_ori.apk || true
+          
+          # Jika gdown gagal (file tidak ada atau ukurannya terlalu kecil/halaman HTML), gunakan bypass langsung
+          if [ ! -f wps_ori.apk ] || [ $(stat -c%s "wps_ori.apk") -lt 1000000 ]; then
+            echo "Menggunakan jalur unduhan langsung (Bypass Konfirmasi Virus Google Drive)..."
+            FILE_ID=$(echo "$INPUT_URL" | sed -n 's/.*\/d\/\([a-zA-Z0-9_-]*\).*/\1/p')
+            if [ -z "$FILE_ID" ]; then
+              FILE_ID="$INPUT_URL"
+            fi
+            curl -L "https://drive.usercontent.google.com/download?id=${FILE_ID}&export=download&confirm=t" -o wps_ori.apk
+          fi
+          
           ls -lh wps_ori.apk
 
-      - name: 5. Decompile & Patch APK
+      - name: 4. Decompile & Patch APK
         run: |
-          echo "Membongkar struktur APK..."
-          apktool d wps_ori.apk -o decompiled_apk -f
+          echo "Membongkar APK dengan alokasi memori 4GB..."
+          java -Xmx4g -jar apktool.jar d wps_ori.apk -o decompiled_apk -f
 
           MANIFEST="decompiled_apk/AndroidManifest.xml"
           
@@ -67,16 +76,16 @@ jobs:
             done
           fi
 
-      - name: 6. Recompile & Sign APK
+      - name: 5. Recompile & Sign APK
         run: |
           echo "Menyusun ulang APK..."
-          apktool b decompiled_apk -o wps_patched_unsigned.apk --use-aapt2
+          java -Xmx4g -jar apktool.jar b decompiled_apk -o wps_patched_unsigned.apk --use-aapt2
 
           echo "Menandatangani APK..."
           java -jar signer.jar --apks wps_patched_unsigned.apk --out signed_output
           ls -lh signed_output/
 
-      - name: 7. Upload Hasil APK Matang
+      - name: 6. Upload Hasil APK Matang
         uses: actions/upload-artifact@v4
         with:
           name: WPS-Office-PC-Patched-APK
