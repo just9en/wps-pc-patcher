@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 2. Setup Java JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -26,65 +26,57 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y wget curl python3-pip zipalign
-          pip3 install gdown
+          pip3 install --upgrade gdown
           
-          # Download APKTool versi terbaru
+          # Unduh APKTool
           wget https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool -O apktool
           wget https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar -O apktool.jar
           chmod +x apktool apktool.jar
           sudo mv apktool apktool.jar /usr/local/bin/
           
-          # Download Uber APK Signer untuk Sign & Zipalign otomatis
+          # Unduh Uber APK Signer
           wget https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -O signer.jar
 
       - name: 4. Download APK dari Google Drive
         run: |
-          echo "Mengunduh APK dari Google Drive..."
-          gdown --fuzzy "${{ github.event.inputs.gdrive_url }}" -O wps_ori.apk
+          echo "Mengunduh file besar dari Google Drive..."
+          # Parameter --fuzzy dan --continue untuk menangani konfirmasi limit file besar
+          python3 -m gdown --fuzzy "${{ github.event.inputs.gdrive_url }}" -O wps_ori.apk --continue
           ls -lh wps_ori.apk
 
-      - name: 5. Decompile & Patch APK (Manifest + Smali)
+      - name: 5. Decompile & Patch APK
         run: |
-          echo "Membongkar APK (Tanpa mendekode aset Linux agar cepat dan tidak korup)..."
-          # Flag --only-main-classes mencegah error pada aset image Linux berukuran besar
+          echo "Membongkar struktur APK..."
           apktool d wps_ori.apk -o decompiled_apk -f
 
           MANIFEST="decompiled_apk/AndroidManifest.xml"
           
           echo "Memodifikasi AndroidManifest.xml..."
-          # 1. Mengubah semua uses-library wajib (seperti miui.pc.framework) menjadi tidak wajib (false)
           sed -i 's/android:required="true"/android:required="false"/g' "$MANIFEST"
-          
-          # 2. Memastikan aplikasi bisa diinstal di memori eksternal/internal secara fleksibel & mengizinkan debug
           sed -i '/com.xiaomi.permission/d' "$MANIFEST"
           sed -i '/miui.permission/d' "$MANIFEST"
 
-          echo "Melakukan Patching Smali (Bypass pengecekan ROM & Device Xiaomi)..."
-          # Mencari file smali yang memvalidasi PC Framework / MIUI / HyperOS
+          echo "Melakukan Patching Smali..."
           MATCHED_FILES=$(grep -rl "isSupportPc\|isMiuiPc\|ro.miui.ui.version\|checkDevice" decompiled_apk/smali* || true)
           
           if [ -n "$MATCHED_FILES" ]; then
             for file in $MATCHED_FILES; do
-              echo " -> Mem-patch file: $file"
-              # Mengubah return boolean false (0x0) menjadi true (0x1)
+              echo "Memodifikasi: $file"
               sed -i 's/const\/4 v0, 0x0/const\/4 v0, 0x1/g' "$file"
               sed -i 's/const\/4 v1, 0x0/const\/4 v1, 0x1/g' "$file"
             done
-          else
-            echo "Catatan: String spesifik tidak ditemukan di smali utama, melanjutkan dengan patch Manifest."
           fi
 
       - name: 6. Recompile & Sign APK
         run: |
-          echo "Menyusun ulang (Recompile) APK..."
+          echo "Menyusun ulang APK..."
           apktool b decompiled_apk -o wps_patched_unsigned.apk --use-aapt2
 
-          echo "Melakukan Zipalign dan Signing APK..."
+          echo "Menandatangani APK..."
           java -jar signer.jar --apks wps_patched_unsigned.apk --out signed_output
-          
           ls -lh signed_output/
 
-      - name: 7. Upload Hasil APK Matang ke Artifacts
+      - name: 7. Upload Hasil APK Matang
         uses: actions/upload-artifact@v4
         with:
           name: WPS-Office-PC-Patched-APK
